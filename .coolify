@@ -1,0 +1,4 @@
+# Configuración de Coolify
+# Forzar el uso del Dockerfile personalizado en lugar de Nixpacks
+
+buildpack=dockerfile
