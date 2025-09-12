@@ -1,272 +1,248 @@
-# Document Converter API
+# 📄 Document Converter API
 
-API simple para convertir documentos DOCX y PDF a Markdown usando MarkItDown de Microsoft.
+[![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://python.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.104+-green.svg)](https://fastapi.tiangolo.com)
+[![Docker](https://img.shields.io/badge/Docker-Ready-blue.svg)](https://docker.com)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## Características
+A powerful and fast API for converting PDF and DOCX documents to Markdown or plain text using Microsoft's MarkItDown library. Perfect for document processing, content extraction, and text analysis workflows.
 
-- Conversión de documentos DOCX y PDF a Markdown
-- Procesamiento asíncrono para archivos grandes
-- Sistema de jobs con seguimiento de estado
-- Limpieza automática de archivos temporales
-- Monitoreo de memoria y recursos
-- Webhooks para notificaciones
-- Health checks
-- Logging estructurado para producción
-- Middleware de CORS configurable
-- Manejo global de excepciones
+## ✨ Features
 
-## Deployment en Coolify
+- 🔄 **Document Conversion**: Convert PDF and DOCX files to Markdown or plain text
+- ⚡ **Powered by MarkItDown**: Uses Microsoft's advanced document processing library
+- 🚀 **Async Processing**: Handle multiple documents simultaneously
+- 📥 **Direct Downloads**: Get converted files instantly via download endpoints
+- 🏥 **Health Checks**: Built-in monitoring and status endpoints
+- 🐳 **Docker Ready**: Containerized for easy deployment
+- 📊 **RESTful API**: Clean and intuitive API design
+- 🔒 **Production Ready**: Structured logging and error handling
 
-### Requisitos del Sistema
+## 🚀 Quick Start
 
-La aplicación requiere las siguientes dependencias del sistema que están incluidas en el Dockerfile:
-
-- `libmagic-dev` - Detección de tipos de archivo
-- `poppler-utils` - Procesamiento de PDFs
-- `tesseract-ocr` - OCR para documentos escaneados
-- `tesseract-ocr-spa` - Paquete de idioma español
-- `tesseract-ocr-eng` - Paquete de idioma inglés
-- `libreoffice` - Procesamiento de documentos Office
-- `pandoc` - Conversión de documentos
-- `qpdf` - Manipulación de PDFs
-
-### Configuración en Coolify
-
-1. **Crear nuevo proyecto en Coolify**
-   - Selecciona "Docker Compose" como tipo de deployment
-   - Conecta tu repositorio Git
-
-2. **Variables de entorno requeridas:**
-   ```env
-   # Configuración básica
-   PORT=8000
-   HOST=0.0.0.0
-   
-   # Configuración de archivos
-   MAX_FILE_SIZE=52428800
-   LARGE_FILE_THRESHOLD=5242880
-   CONVERSION_TIMEOUT=300
-   CHUNK_SIZE=1000
-   
-   # Configuración de archivos temporales
-   TEMP_FILES_DIR=./temp_files
-   TEMP_FILES_RETENTION_HOURS=24
-   MAX_TEMP_FILES=100
-   
-   # Configuración de logging para producción
-   ENVIRONMENT=production
-   LOG_LEVEL=INFO
-   
-   # Configuración de CORS para producción
-   ALLOWED_ORIGINS=*
-   
-   # Webhook opcional para notificaciones
-   WEBHOOK_URL=https://tu-webhook-url.com/webhook
-   ```
-
-3. **Configuración de recursos recomendada:**
-   - **CPU**: 1-2 cores
-   - **RAM**: 1-2 GB (mínimo 512MB)
-   - **Almacenamiento**: 5-10 GB
-   - **Timeout**: 300 segundos (para archivos grandes)
-
-4. **Health Check:**
-   - **Path**: `/health`
-   - **Port**: 8000
-   - **Interval**: 30s
-   - **Timeout**: 10s
-   - **Retries**: 3
-
-### Archivos de Configuración
-
-El proyecto incluye:
-
-- `Dockerfile` - Imagen optimizada para producción con todas las dependencias
-- `docker-compose.yml` - Configuración para desarrollo y testing
-- `.env.example` - Plantilla de variables de entorno
-- `requirements.txt` - Dependencias de Python
-
-### Monitoreo y Logs
-
-La aplicación incluye:
-
-- **Logging estructurado**: JSON en producción, formato legible en desarrollo
-- **Middleware de logging**: Registra todas las requests y responses
-- **Manejo global de excepciones**: Captura y registra todos los errores
-- **Métricas del sistema**: Endpoint `/system/stats` para monitoreo
-- **Health checks**: Endpoint `/health` con verificaciones extendidas
-
-### Endpoints de Monitoreo
-
-- `GET /health` - Health check básico
-- `GET /health?extended=true` - Health check extendido con limpieza
-- `GET /system/stats` - Estadísticas del sistema y jobs
-- `GET /jobs` - Lista de jobs activos
-
-## Instalación Local
-
-1. Clona el repositorio
-2. Instala las dependencias:
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. Configura las variables de entorno:
-   ```bash
-   cp .env.example .env
-   ```
-4. Ejecuta la aplicación:
-   ```bash
-   uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-   ```
-
-## Uso
-
-### Endpoints principales
-
-- `POST /convert` - Convierte un documento
-- `POST /convert-and-save` - Convierte y guarda para descarga posterior
-- `GET /status/{job_id}` - Consulta el estado de un job
-- `GET /result/{job_id}` - Obtiene el resultado de la conversión
-- `GET /download/{job_id}` - Descarga el archivo convertido
-- `DELETE /jobs/{job_id}` - Elimina un job
-- `GET /jobs` - Lista todos los jobs
-- `GET /health` - Health check
-- `GET /system/stats` - Estadísticas del sistema
-
-### Ejemplo de uso
+### Using Docker (Recommended)
 
 ```bash
-# Conversión directa
+# Clone the repository
+git clone https://github.com/cocacha12/document-converter-api.git
+cd document-converter-api
+
+# Run with Docker Compose
+docker-compose up -d
+
+# API will be available at http://localhost:8000
+```
+
+### Local Installation
+
+```bash
+# Clone and setup
+git clone https://github.com/cocacha12/document-converter-api.git
+cd document-converter-api
+
+# Create virtual environment
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Run the server
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+## 📖 API Usage
+
+### Convert Document
+
+**Endpoint:** `POST /convert`
+
+#### Convert to Markdown (default)
+
+```bash
 curl -X POST "http://localhost:8000/convert" \
+  -H "accept: application/json" \
   -H "Content-Type: multipart/form-data" \
-  -F "file=@documento.pdf"
+  -F "file=@document.pdf"
+```
 
-# Conversión con guardado
-curl -X POST "http://localhost:8000/convert-and-save" \
+#### Convert to Plain Text
+
+```bash
+curl -X POST "http://localhost:8000/convert?format=text" \
+  -H "accept: application/json" \
   -H "Content-Type: multipart/form-data" \
-  -F "file=@documento.pdf" \
-  -F "format=markdown"
+  -F "file=@document.docx"
 ```
 
-## Docker
-
-Puedes ejecutar la aplicación usando Docker:
-
-```bash
-docker build -t document-converter .
-docker run -p 8000:8000 document-converter
-```
-
-O usando docker-compose:
-
-```bash
-docker-compose up
-```
-
-## Troubleshooting
-
-### Problemas Comunes
-
-1. **Error de memoria**: Ajusta `MAX_MEMORY_USAGE` y `LARGE_FILE_THRESHOLD`
-2. **Timeouts**: Incrementa `CONVERSION_TIMEOUT`
-3. **Archivos temporales**: Verifica permisos en `TEMP_FILES_DIR`
-4. **Dependencias del sistema**: Asegúrate de que el Dockerfile incluye todas las dependencias
-
-### Logs de Debug
-
-Para habilitar logs de debug:
-```env
-LOG_LEVEL=DEBUG
-ENVIRONMENT=development
-```
-
-## Formatos soportados
-
-- **PDF**: Archivos PDF estándar
-- **DOCX**: Documentos de Microsoft Word
-
-## Limitaciones
-
-- Tamaño máximo de archivo: 10MB
-- Solo archivos DOCX y PDF
-- Sin autenticación (API pública)
-- Sin persistencia de datos
-
-## Estructura del proyecto
-
-```
-.
-├── app/
-│   ├── __init__.py
-│   └── main.py          # Lógica principal de la API
-├── venv/                # Entorno virtual
-├── main.py              # Punto de entrada
-├── requirements.txt     # Dependencias
-└── README.md           # Este archivo
-```
-
-## Dependencias principales
-
-- **FastAPI**: Framework web moderno y rápido
-- **MarkItDown**: Librería de Microsoft para conversión a Markdown
-- **Uvicorn**: Servidor ASGI para FastAPI
-- **python-multipart**: Para manejo de archivos multipart
-
-## Desarrollo
-
-Para desarrollo, la API se ejecuta con recarga automática:
-
-```bash
-python main.py
-```
-
-O usando uvicorn directamente:
-
-```bash
-uvicorn app.main:app --reload
-```
-
-## Ejemplos de uso
-
-### Con Python requests
+#### Python Example
 
 ```python
 import requests
 
-url = "http://localhost:8000/convert"
-files = {'file': open('documento.pdf', 'rb')}
+# Convert PDF to Markdown
+with open('document.pdf', 'rb') as f:
+    response = requests.post(
+        'http://localhost:8000/convert',
+        files={'file': f}
+    )
+    result = response.json()
+    print(result['content'])
 
-response = requests.post(url, files=files)
-result = response.json()
-
-print(result['markdown_content'])
+# Convert DOCX to Text
+with open('document.docx', 'rb') as f:
+    response = requests.post(
+        'http://localhost:8000/convert',
+        files={'file': f},
+        params={'format': 'text'}
+    )
+    result = response.json()
+    print(result['content'])
 ```
 
-### Con JavaScript/Fetch
+### Download Converted File
 
-```javascript
-const formData = new FormData();
-formData.append('file', fileInput.files[0]);
+**Endpoint:** `GET /download/{job_id}`
 
-fetch('http://localhost:8000/convert', {
-    method: 'POST',
-    body: formData
-})
-.then(response => response.json())
-.then(data => {
-    console.log(data.markdown_content);
-});
+```bash
+# After conversion, use the job_id to download
+curl -X GET "http://localhost:8000/download/{job_id}" \
+  --output converted_document.txt
 ```
 
-## Manejo de errores
+### Health Check
 
-La API devuelve códigos de estado HTTP apropiados:
+```bash
+curl -X GET "http://localhost:8000/health"
+```
 
-- **200**: Conversión exitosa
-- **400**: Error en la validación del archivo
-- **413**: Archivo demasiado grande
-- **500**: Error interno del servidor
+## 📋 API Endpoints
 
-## Licencia
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/convert` | Convert PDF/DOCX to Markdown/Text |
+| `GET` | `/download/{job_id}` | Download converted file |
+| `GET` | `/health` | Health check endpoint |
+| `GET` | `/` | API documentation (Swagger UI) |
 
-Este proyecto es de código abierto y está disponible bajo la licencia MIT.
+## 🔧 Configuration
+
+### Environment Variables
+
+```bash
+# Server Configuration
+PORT=8000
+HOST=0.0.0.0
+
+# File Processing
+MAX_FILE_SIZE=50MB
+TEMP_DIR=./temp_files
+
+# Logging
+LOG_LEVEL=INFO
+```
+
+### Supported File Types
+
+- **PDF**: `.pdf`
+- **DOCX**: `.docx`
+
+### Output Formats
+
+- **Markdown**: Rich formatting preserved
+- **Plain Text**: Clean text extraction
+
+## 🐳 Deployment
+
+### Docker
+
+```bash
+# Build image
+docker build -t document-converter-api .
+
+# Run container
+docker run -p 8000:8000 document-converter-api
+```
+
+### Docker Compose
+
+```yaml
+version: '3.8'
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./temp_files:/app/temp_files
+    environment:
+      - LOG_LEVEL=INFO
+```
+
+### Cloud Deployment
+
+This API is ready for deployment on:
+- **Heroku**
+- **Railway**
+- **Render**
+- **DigitalOcean App Platform**
+- **AWS ECS/Fargate**
+- **Google Cloud Run**
+- **Azure Container Instances**
+
+## 🛠️ Development
+
+### Project Structure
+
+```
+document-converter-api/
+├── app/
+│   ├── __init__.py
+│   ├── main.py          # FastAPI application
+│   ├── models.py        # Pydantic models
+│   └── utils.py         # Utility functions
+├── temp_files/          # Temporary file storage
+├── Dockerfile
+├── docker-compose.yml
+├── requirements.txt
+└── README.md
+```
+
+### Running Tests
+
+```bash
+# Install test dependencies
+pip install pytest pytest-asyncio httpx
+
+# Run tests
+pytest
+```
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+## 📝 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 🙏 Acknowledgments
+
+- [MarkItDown](https://github.com/microsoft/markitdown) - Microsoft's document processing library
+- [FastAPI](https://fastapi.tiangolo.com/) - Modern web framework for building APIs
+- [Uvicorn](https://www.uvicorn.org/) - ASGI server implementation
+
+## 📞 Support
+
+If you have any questions or issues, please:
+1. Check the [Issues](https://github.com/cocacha12/document-converter-api/issues) page
+2. Create a new issue if needed
+3. Star ⭐ the repository if you find it useful!
+
+---
+
+**Keywords**: document converter, PDF to markdown, DOCX to text, MarkItDown API, FastAPI, document processing, text extraction, file conversion
