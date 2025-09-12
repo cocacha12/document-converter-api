@@ -59,6 +59,7 @@ temp_files/
 *.pdf
 *.docx
 *.txt
+!requirements.txt
 
 # Git
 .git/
