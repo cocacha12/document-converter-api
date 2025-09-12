@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  document-converter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=production
+      - MAX_FILE_SIZE=52428800  # 50MB
+      - LARGE_FILE_THRESHOLD=5242880  # 5MB
+      - MAX_MEMORY_USAGE=524288000  # 500MB
+      - CONVERSION_TIMEOUT=300  # 5 minutos
+      - CHUNK_SIZE=1000
+      - TEMP_FILES_DIR=/app/temp_files
+      - TEMP_FILES_RETENTION_HOURS=24
+      - MAX_TEMP_FILES=100
+      - LOG_LEVEL=INFO
+      - ALLOWED_ORIGINS=*
+      # - WEBHOOK_URL=  # Configurar si se necesita
+    volumes:
+      - temp_files:/app/temp_files
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  temp_files:
+    driver: local
+
+networks:
+  default:
+    name: document-converter-network
