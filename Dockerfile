@@ -1,7 +1,7 @@
 # Dockerfile para API de conversión de documentos
-# Basado en Python 3.10 con dependencias del sistema para MarkItDown
+# Usando Alpine Linux con Python para mayor estabilidad
 
-FROM python:3.10-slim
+FROM python:3.9-alpine
 
 # Establecer variables de entorno
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -10,26 +10,25 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 # Crear usuario no-root para seguridad
-RUN groupadd -r appuser && useradd -r -g appuser appuser
+RUN addgroup -g 1001 -S appuser && adduser -u 1001 -S appuser -G appuser
 
 # Instalar dependencias del sistema requeridas por MarkItDown
-RUN apt-get update && apt-get install -y \
+RUN apk update && apk add --no-cache \
     # Dependencias básicas
     curl \
     wget \
     # Dependencias para MarkItDown
-    libmagic-dev \
+    file-dev \
     poppler-utils \
     tesseract-ocr \
-    tesseract-ocr-spa \
-    tesseract-ocr-eng \
     qpdf \
     # Dependencias adicionales para procesamiento de documentos
     libreoffice \
     pandoc \
-    # Limpieza
-    && rm -rf /var/lib/apt/lists/* \
-    && apt-get clean
+    # Dependencias de compilación
+    gcc \
+    musl-dev \
+    linux-headers
 
 # Crear directorio de trabajo
 WORKDIR /app
