@@ -1,0 +1,16 @@
+# Documento de Prueba 2
+
+Este es el segundo documento de prueba para la funcionalidad de fusión.
+
+## Contenido del Documento 2
+
+Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque laudantium.
+
+### Capítulo 1
+Totam rem aperiam, eaque ipsa quae ab illo inventore veritatis.
+
+### Capítulo 2
+Et quasi architecto beatae vitae dicta sunt explicabo.
+
+### Capítulo 3
+Nemo enim ipsam voluptatem quia voluptas sit aspernatur aut odit aut fugit.
