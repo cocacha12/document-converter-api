@@ -20,6 +20,11 @@ email-validator==2.1.0
 
 # Manejo de archivos y formatos
 filetype==1.2.0
+pypdf==3.0.1
+python-magic==0.4.27
+
+# WebSocket support
+websockets==12.0
 
 # Para desarrollo y testing (opcional)
 # pytest==7.4.3

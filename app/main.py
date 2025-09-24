@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Request
+from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exception_handlers import http_exception_handler
@@ -6,7 +6,7 @@ import time
 from markitdown import MarkItDown
 import tempfile
 import os
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import uuid
 import asyncio
 from datetime import datetime, timedelta
@@ -17,6 +17,13 @@ from pathlib import Path
 import re
 import structlog
 import sys
+import zipfile
+import json
+from io import BytesIO
+try:
+    import magic
+except ImportError:
+    magic = None
 
 # Configurar structlog para producción
 def configure_logging():
@@ -217,6 +224,130 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL", None)  # URL para webhooks n8n
 # Crear directorio de archivos temporales si no existe
 Path(TEMP_FILES_DIR).mkdir(parents=True, exist_ok=True)
 
+# Nuevas clases para manejo de títulos y archivos
+class TitleInfo:
+    def __init__(self, extracted_title: str, custom_title: Optional[str] = None, 
+                 confidence: float = 0.0, fallback_used: bool = False, 
+                 extraction_method: str = "content"):
+        self.extracted_title = extracted_title
+        self.custom_title = custom_title
+        self.confidence = confidence
+        self.fallback_used = fallback_used
+        self.extraction_method = extraction_method
+
+class FileInfo:
+    def __init__(self, filename: str, file_size: int, file_type: str, 
+                 order_index: int = 0, is_from_zip: bool = False):
+        self.id = str(uuid.uuid4())
+        self.filename = filename
+        self.file_size = file_size
+        self.file_type = file_type
+        self.order_index = order_index
+        self.is_from_zip = is_from_zip
+        self.title_info: Optional[TitleInfo] = None
+
+# Almacén para conexiones WebSocket
+websocket_connections: Dict[str, WebSocket] = {}
+
+# Funciones para extracción de títulos
+def extract_title_from_content(content: str, filename: str) -> TitleInfo:
+    """Extrae el título de un documento basado en su contenido"""
+    lines = content.strip().split('\n')
+    
+    # Buscar primer encabezado H1
+    for line in lines[:20]:  # Revisar solo las primeras 20 líneas
+        line = line.strip()
+        if line.startswith('# '):
+            title = line[2:].strip()
+            if title:
+                return TitleInfo(
+                    extracted_title=title,
+                    confidence=0.9,
+                    fallback_used=False,
+                    extraction_method="header"
+                )
+    
+    # Buscar primer párrafo no vacío que parezca un título
+    for line in lines[:10]:
+        line = line.strip()
+        if line and len(line) < 100 and not line.startswith(('*', '-', '>', '|')):
+            # Verificar si parece un título (no muy largo, sin caracteres especiales)
+            if not re.search(r'[.!?]$', line) and len(line.split()) <= 10:
+                return TitleInfo(
+                    extracted_title=line,
+                    confidence=0.7,
+                    fallback_used=False,
+                    extraction_method="content"
+                )
+    
+    # Fallback: usar nombre del archivo
+    title = os.path.splitext(filename)[0].replace('_', ' ').replace('-', ' ').title()
+    return TitleInfo(
+        extracted_title=title,
+        confidence=0.5,
+        fallback_used=True,
+        extraction_method="filename"
+    )
+
+def validate_zip_file(file_content: bytes) -> bool:
+    """Valida si el contenido es un archivo ZIP válido"""
+    try:
+        with zipfile.ZipFile(BytesIO(file_content), 'r') as zip_file:
+            # Verificar que el ZIP no esté corrupto
+            zip_file.testzip()
+            return True
+    except (zipfile.BadZipFile, zipfile.LargeZipFile):
+        return False
+
+def extract_files_from_zip(file_content: bytes) -> List[Dict[str, Any]]:
+    """Extrae archivos DOCX y PDF de un archivo ZIP"""
+    extracted_files = []
+    
+    try:
+        with zipfile.ZipFile(BytesIO(file_content), 'r') as zip_file:
+            for file_info in zip_file.filelist:
+                # Saltar directorios
+                if file_info.is_dir():
+                    continue
+                
+                filename = file_info.filename
+                file_extension = os.path.splitext(filename)[1].lower()
+                
+                # Solo procesar archivos DOCX y PDF
+                if file_extension in ALLOWED_EXTENSIONS:
+                    try:
+                        file_data = zip_file.read(file_info)
+                        extracted_files.append({
+                            "filename": os.path.basename(filename),
+                            "content": file_data,
+                            "size": len(file_data),
+                            "type": file_extension[1:],  # Remover el punto
+                            "original_path": filename
+                        })
+                    except Exception as e:
+                        logger.warning(f"Error extrayendo {filename}: {str(e)}")
+                        continue
+    
+    except Exception as e:
+        logger.error(f"Error procesando archivo ZIP: {str(e)}")
+        raise HTTPException(status_code=400, detail="Error procesando archivo ZIP")
+    
+    return extracted_files
+
+async def send_websocket_update(job_id: str, message: Dict[str, Any]) -> None:
+    """Envía actualización por WebSocket si hay conexión activa"""
+    if job_id in websocket_connections:
+        try:
+            json_message = json.dumps(message)
+            logger.info(f"📡 Sending WebSocket message: {json_message[:500]}...", job_id=job_id)
+            await websocket_connections[job_id].send_text(json_message)
+        except Exception as e:
+            logger.warning(f"Error enviando WebSocket update para job {job_id}: {str(e)}")
+            # Remover conexión si hay error
+            websocket_connections.pop(job_id, None)
+    else:
+        logger.warning(f"No WebSocket connection found for job {job_id}")
+
 
 def validate_file(file: UploadFile) -> None:
     """Validar el archivo subido"""
@@ -363,6 +494,14 @@ async def process_conversion_async(job: ConversionJob, file_content: bytes, temp
         job.started_at = datetime.now()
         job.progress = 10
         
+        # Enviar actualización inicial
+        await send_websocket_update(job.job_id, {
+            "type": "progress",
+            "status": "processing",
+            "progress": 10,
+            "message": "Iniciando conversión de documento"
+        })
+        
         # Monitorear memoria antes de la conversión
         initial_memory = get_memory_usage()
         job.memory_usage = initial_memory
@@ -372,6 +511,12 @@ async def process_conversion_async(job: ConversionJob, file_content: bytes, temp
             raise Exception(f"Uso de memoria excesivo: {initial_memory / (1024*1024):.2f}MB")
         
         job.progress = 30
+        await send_websocket_update(job.job_id, {
+            "type": "progress",
+            "status": "processing",
+            "progress": 30,
+            "message": "Verificando memoria y preparando conversión"
+        })
         
         # Realizar conversión con timeout
         logger.info(f"Iniciando conversión asíncrona para job {job.job_id}")
@@ -379,9 +524,21 @@ async def process_conversion_async(job: ConversionJob, file_content: bytes, temp
         # Simular progreso durante la conversión
         await asyncio.sleep(0.1)  # Permitir que otros procesos corran
         job.progress = 50
+        await send_websocket_update(job.job_id, {
+            "type": "progress",
+            "status": "processing",
+            "progress": 50,
+            "message": "Convirtiendo documento a markdown"
+        })
         
         result = md_converter.convert(temp_file_path)
         job.progress = 80
+        await send_websocket_update(job.job_id, {
+            "type": "progress",
+            "status": "processing",
+            "progress": 80,
+            "message": "Procesando contenido convertido"
+        })
         
         # Verificar memoria después de la conversión
         final_memory = get_memory_usage()
@@ -421,6 +578,27 @@ async def process_conversion_async(job: ConversionJob, file_content: bytes, temp
         job.status = JobStatus.COMPLETED
         job.completed_at = datetime.now()
         
+        logger.info(f"🎯 Job {job.job_id} marked as COMPLETED, sending WebSocket update")
+        
+        # Enviar actualización final por WebSocket con resultado
+        await send_websocket_update(job.job_id, {
+            "type": "status_update",
+            "status": "completed",
+            "progress": 100,
+            "message": "Conversión completada exitosamente",
+            "result": {
+                "success": True,
+                "job_id": job.job_id,
+                "filename": job.filename,
+                "download_url": f"/download/{job.job_id}",
+                "format": job.output_format.value,
+                "processing_time": (datetime.now() - job.started_at).total_seconds(),
+                "content_preview": markdown_content[:500] + "..." if len(markdown_content) > 500 else markdown_content
+            }
+        })
+        
+        logger.info(f"📡 WebSocket completion message sent for job {job.job_id}")
+        
         # Enviar webhook si está configurado
         if WEBHOOK_URL:
             webhook_data = {
@@ -439,6 +617,15 @@ async def process_conversion_async(job: ConversionJob, file_content: bytes, temp
         job.status = JobStatus.FAILED
         job.error_message = str(e)
         job.completed_at = datetime.now()
+        
+        # Enviar actualización de error por WebSocket
+        await send_websocket_update(job.job_id, {
+            "type": "error",
+            "status": "failed",
+            "progress": 0,
+            "message": f"Error en conversión: {str(e)}",
+            "error": str(e)
+        })
         
         # Enviar webhook de error si está configurado
         if WEBHOOK_URL:
@@ -786,21 +973,27 @@ async def get_job_status(job_id: str) -> Dict[str, Any]:
 @app.get("/result/{job_id}")
 async def get_job_result(job_id: str, chunk: Optional[int] = None) -> Dict[str, Any]:
     """Obtener el resultado de un job completado, opcionalmente por chunks"""
+    logger.info(f"🔍 GET /result/{job_id} - Fetching job result")
+    
     if job_id not in jobs_store:
+        logger.error(f"❌ Job {job_id} not found in jobs_store. Available jobs: {list(jobs_store.keys())}")
         raise HTTPException(
             status_code=404,
             detail="Job no encontrado"
         )
     
     job = jobs_store[job_id]
+    logger.info(f"📊 Job {job_id} status: {job.status}, has_result: {job.result is not None}")
     
     if job.status != JobStatus.COMPLETED:
+        logger.error(f"❌ Job {job_id} not completed. Current status: {job.status}")
         raise HTTPException(
             status_code=400,
             detail=f"Job no completado. Estado actual: {job.status}"
         )
     
     if not job.result:
+        logger.error(f"❌ Job {job_id} completed but no result available")
         raise HTTPException(
             status_code=500,
             detail="Resultado no disponible"
@@ -810,11 +1003,13 @@ async def get_job_result(job_id: str, chunk: Optional[int] = None) -> Dict[str, 
     if chunk is not None:
         chunks = job.result.get("chunks", [])
         if chunk < 0 or chunk >= len(chunks):
+            logger.error(f"❌ Invalid chunk {chunk} for job {job_id}. Available: 0-{len(chunks)-1}")
             raise HTTPException(
                 status_code=400,
                 detail=f"Chunk inválido. Disponibles: 0-{len(chunks)-1}"
             )
         
+        logger.info(f"✅ Returning chunk {chunk} for job {job_id}")
         return {
             "job_id": job_id,
             "chunk_index": chunk,
@@ -824,6 +1019,7 @@ async def get_job_result(job_id: str, chunk: Optional[int] = None) -> Dict[str, 
         }
     
     # Retornar resultado completo
+    logger.info(f"✅ Returning complete result for job {job_id}")
     return job.result
 
 @app.get("/jobs")
@@ -963,14 +1159,457 @@ async def health_check() -> Dict[str, Any]:
             "error": str(e)
         }
 
+async def convert_multiple_files_to_markdown(files: List[UploadFile]) -> List[Dict[str, Any]]:
+    """Convierte múltiples archivos DOCX/PDF a markdown usando MarkItDown con extracción de títulos"""
+    converted_files = []
+    
+    for index, file in enumerate(files):
+        # Validar cada archivo
+        validate_file(file)
+        
+        # Leer contenido del archivo
+        file_content = await file.read()
+        
+        # Crear archivo temporal
+        with tempfile.NamedTemporaryFile(delete=False, suffix=Path(file.filename).suffix) as temp_file:
+            temp_file.write(file_content)
+            temp_file_path = temp_file.name
+        
+        try:
+            # Convertir usando MarkItDown
+            result = md_converter.convert(temp_file_path)
+            markdown_content = result.text_content
+            
+            # Extraer título del contenido
+            title_info = extract_title_from_content(markdown_content, file.filename)
+            
+            # Crear información del archivo
+            file_info = FileInfo(
+                filename=file.filename,
+                file_size=len(file_content),
+                file_type=Path(file.filename).suffix[1:].lower(),
+                order_index=index
+            )
+            file_info.title_info = title_info
+            
+            converted_files.append({
+                "file_info": file_info,
+                "content": markdown_content,
+                "title": title_info.custom_title or title_info.extracted_title
+            })
+            
+        except Exception as e:
+            logger.error(f"Error convirtiendo {file.filename}: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Error convirtiendo {file.filename}: {str(e)}")
+        
+        finally:
+            # Limpiar archivo temporal
+            if os.path.exists(temp_file_path):
+                os.unlink(temp_file_path)
+    
+    return converted_files
+
+def merge_markdown_contents(converted_files: List[Dict[str, Any]], main_title: str = "Documento Fusionado") -> str:
+    """Fusiona múltiples contenidos markdown usando títulos extraídos como separadores"""
+    merged_content = f"# {main_title}\n\n"
+    merged_content += f"*Documento generado el {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*\n\n"
+    merged_content += f"*Este documento contiene {len(converted_files)} archivo(s) fusionado(s)*\n\n"
+    
+    # Agregar índice de contenidos
+    merged_content += "## Índice de Contenidos\n\n"
+    for i, file_data in enumerate(converted_files, 1):
+        title = file_data["title"]
+        filename = file_data["file_info"].filename
+        merged_content += f"{i}. [{title}](#{title.lower().replace(' ', '-').replace('á', 'a').replace('é', 'e').replace('í', 'i').replace('ó', 'o').replace('ú', 'u').replace('ñ', 'n')}) - *{filename}*\n"
+    
+    merged_content += "\n---\n\n"
+    
+    # Agregar contenido de cada archivo con su título como encabezado
+    for i, file_data in enumerate(converted_files, 1):
+        title = file_data["title"]
+        content = file_data["content"]
+        file_info = file_data["file_info"]
+        
+        # Agregar separador y título del documento
+        merged_content += f"## {i}. {title}\n\n"
+        merged_content += f"*Archivo original: {file_info.filename}*\n"
+        merged_content += f"*Tamaño: {file_info.file_size:,} bytes*\n"
+        merged_content += f"*Método de extracción de título: {file_info.title_info.extraction_method}*\n\n"
+        
+        # Procesar contenido para ajustar niveles de encabezados
+        processed_content = ""
+        for line in content.split('\n'):
+            # Incrementar nivel de encabezados para mantener jerarquía
+            if line.startswith('#'):
+                line = '#' + line
+            processed_content += line + '\n'
+        
+        merged_content += processed_content
+        merged_content += "\n---\n\n"
+    
+    return merged_content
+
+@app.post("/merge-docx")
+async def merge_docx_documents(
+    background_tasks: BackgroundTasks,
+    files: List[UploadFile] = File(...),
+    title: str = "Documento Fusionado",
+    output_format: OutputFormat = OutputFormat.MARKDOWN,
+    save_temp: bool = True,
+    webhook_url: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Fusiona múltiples documentos DOCX convirtiéndolos primero a markdown
+    y luego combinándolos en un solo documento
+    """
+    
+    # Validar que se proporcionen archivos
+    if not files or len(files) == 0:
+        raise HTTPException(status_code=400, detail="Debe proporcionar al menos un archivo")
+    
+    # Validar límite de archivos (máximo 10 para evitar sobrecarga)
+    if len(files) > 10:
+        raise HTTPException(status_code=400, detail="Máximo 10 archivos permitidos para fusión")
+    
+    # Crear job para el proceso de fusión
+    job_id = str(uuid.uuid4())
+    total_size = sum(file.size or 0 for file in files)
+    filenames = [file.filename for file in files]
+    
+    job = ConversionJob(
+        job_id=job_id,
+        filename=f"merged_{len(files)}_files.{get_file_extension_for_format(output_format)}",
+        file_size=total_size,
+        output_format=output_format
+    )
+    jobs_store[job_id] = job
+    
+    logger.info("Iniciando fusión de documentos", 
+                job_id=job_id, 
+                files_count=len(files), 
+                filenames=filenames,
+                total_size=total_size)
+    
+    try:
+        # Verificar memoria disponible
+        memory_usage = get_memory_usage()
+        if memory_usage > MAX_MEMORY_USAGE:
+            raise HTTPException(
+                status_code=503, 
+                detail=f"Memoria insuficiente. Uso actual: {memory_usage / 1024 / 1024:.1f}MB"
+            )
+        
+        # Procesar archivos de forma asíncrona
+        background_tasks.add_task(
+            process_merge_async, 
+            job, 
+            files, 
+            title, 
+            save_temp, 
+            webhook_url
+        )
+        
+        return {
+            "job_id": job_id,
+            "status": "processing",
+            "message": f"Procesando fusión de {len(files)} archivos",
+            "files": filenames,
+            "estimated_time": f"{len(files) * 30} segundos"
+        }
+        
+    except Exception as e:
+        job.status = JobStatus.FAILED
+        job.error = str(e)
+        logger.error("Error iniciando fusión", job_id=job_id, error=str(e))
+        raise HTTPException(status_code=500, detail=f"Error procesando fusión: {str(e)}")
+
+async def process_merge_async(
+    job: ConversionJob, 
+    files: List[UploadFile], 
+    title: str, 
+    save_temp: bool, 
+    webhook_url: Optional[str]
+) -> None:
+    """Procesa la fusión de archivos de forma asíncrona"""
+    
+    try:
+        job.status = JobStatus.PROCESSING
+        job.start_time = time.time()
+        
+        # Enviar actualización inicial
+        await send_websocket_update(job.job_id, {
+            "type": "progress",
+            "status": "processing",
+            "progress": 10,
+            "message": "Iniciando procesamiento de archivos"
+        })
+        
+        logger.info("Iniciando conversión de archivos a markdown", job_id=job.job_id)
+        
+        # Convertir archivos a markdown con extracción de títulos
+        await send_websocket_update(job.job_id, {
+            "type": "progress",
+            "status": "processing",
+            "progress": 30,
+            "message": "Convirtiendo archivos a markdown"
+        })
+        
+        converted_files = await convert_multiple_files_to_markdown(files)
+        
+        logger.info("Fusionando contenidos markdown", job_id=job.job_id)
+        
+        # Fusionar contenidos usando títulos extraídos
+        await send_websocket_update(job.job_id, {
+            "type": "progress",
+            "status": "processing",
+            "progress": 70,
+            "message": "Fusionando contenidos"
+        })
+        
+        merged_content = merge_markdown_contents(converted_files, title)
+        
+        # Formatear según el formato de salida solicitado
+        await send_websocket_update(job.job_id, {
+            "type": "progress",
+            "status": "processing",
+            "progress": 90,
+            "message": "Formateando contenido final"
+        })
+        
+        formatted_content = format_content_for_output(merged_content, job.output_format)
+        
+        # Guardar resultado en el formato esperado por /result/{job_id}
+        job.result = {
+            "success": True,
+            "job_id": job.job_id,
+            "filename": job.filename,
+            "content": formatted_content,
+            "format": job.output_format.value,
+            "files_merged": len(files),
+            "processing_time": None  # Se actualizará después
+        }
+        job.status = JobStatus.COMPLETED
+        job.end_time = time.time()
+        job.processing_time = job.end_time - job.start_time
+        
+        # Actualizar el processing_time en el resultado
+        job.result["processing_time"] = job.processing_time
+        
+        # Esperar un momento para asegurar que la conexión WebSocket esté establecida
+        await asyncio.sleep(0.5)
+        
+        # Enviar actualización de finalización con resultado
+        completion_message = {
+            "type": "status_update",
+            "status": "completed",
+            "progress": 100,
+            "message": "Procesamiento completado exitosamente",
+            "result": job.result
+        }
+        logger.info(f"🔍 Sending completion message with result: {completion_message}", job_id=job.job_id)
+        await send_websocket_update(job.job_id, completion_message)
+        
+        # Esperar un momento adicional para asegurar que el mensaje se envíe
+        await asyncio.sleep(0.2)
+        
+        # Guardar archivo temporal si se solicita
+        if save_temp:
+            try:
+                temp_file_path = save_temp_file(
+                    formatted_content, 
+                    job.job_id, 
+                    job.filename, 
+                    job.output_format
+                )
+                job.temp_file_path = temp_file_path
+                logger.info("Archivo temporal guardado", 
+                           job_id=job.job_id, 
+                           path=temp_file_path)
+            except Exception as e:
+                logger.warning("Error guardando archivo temporal", 
+                              job_id=job.job_id, 
+                              error=str(e))
+        
+        logger.info("Fusión completada exitosamente", 
+                   job_id=job.job_id, 
+                   processing_time=job.processing_time,
+                   files_merged=len(files))
+        
+        # Enviar webhook si se proporciona
+        if webhook_url:
+            webhook_data = {
+                "job_id": job.job_id,
+                "status": "completed",
+                "files_merged": len(files),
+                "processing_time": job.processing_time,
+                "result_preview": formatted_content[:500] + "..." if len(formatted_content) > 500 else formatted_content
+            }
+            await send_webhook(webhook_url, webhook_data)
+        
+    except Exception as e:
+        job.status = JobStatus.FAILED
+        job.error = str(e)
+        job.end_time = time.time()
+        
+        # Enviar actualización de error por WebSocket
+        await send_websocket_update(job.job_id, {
+            "type": "error",
+            "status": "failed",
+            "progress": 0,
+            "message": f"Error en procesamiento: {str(e)}",
+            "error": str(e)
+        })
+        
+        logger.error("Error en fusión de documentos", 
+                    job_id=job.job_id, 
+                    error=str(e))
+        
+        # Enviar webhook de error si se proporciona
+        if webhook_url:
+            webhook_data = {
+                "job_id": job.job_id,
+                "status": "failed",
+                "error": str(e)
+            }
+            await send_webhook(webhook_url, webhook_data)
+
+@app.post("/process-zip")
+async def process_zip_file(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    title: str = "Documentos desde ZIP",
+    output_format: OutputFormat = OutputFormat.MARKDOWN,
+    save_temp: bool = True,
+    webhook_url: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Procesa un archivo ZIP extrayendo documentos DOCX y PDF para fusionarlos
+    """
+    
+    # Validar que sea un archivo ZIP
+    if not file.filename.lower().endswith('.zip'):
+        raise HTTPException(status_code=400, detail="Solo se permiten archivos ZIP")
+    
+    # Leer contenido del archivo ZIP
+    zip_content = await file.read()
+    
+    # Validar que sea un ZIP válido
+    if not validate_zip_file(zip_content):
+        raise HTTPException(status_code=400, detail="Archivo ZIP inválido o corrupto")
+    
+    # Extraer archivos del ZIP
+    try:
+        extracted_files = extract_files_from_zip(zip_content)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error procesando ZIP: {str(e)}")
+    
+    if not extracted_files:
+        raise HTTPException(status_code=400, detail="No se encontraron archivos DOCX o PDF válidos en el ZIP")
+    
+    # Crear objetos UploadFile temporales para los archivos extraídos
+    temp_files = []
+    for extracted in extracted_files:
+        # Crear un objeto similar a UploadFile
+        temp_file = type('TempUploadFile', (), {
+            'filename': extracted['filename'],
+            'size': extracted['size'],
+            'content_type': f"application/{extracted['type']}",
+            'read': lambda content=extracted['content']: asyncio.coroutine(lambda: content)()
+        })()
+        temp_files.append(temp_file)
+    
+    # Crear job para el proceso
+    job_id = str(uuid.uuid4())
+    total_size = sum(f['size'] for f in extracted_files)
+    
+    job = ConversionJob(
+        job_id=job_id,
+        filename=f"zip_merged_{len(extracted_files)}_files.{get_file_extension_for_format(output_format)}",
+        file_size=total_size,
+        output_format=output_format
+    )
+    jobs_store[job_id] = job
+    
+    logger.info("Procesando archivo ZIP", 
+                job_id=job_id, 
+                zip_filename=file.filename,
+                extracted_count=len(extracted_files),
+                total_size=total_size)
+    
+    # Procesar archivos extraídos de forma asíncrona
+    background_tasks.add_task(
+        process_merge_async, 
+        job, 
+        temp_files, 
+        title, 
+        save_temp, 
+        webhook_url
+    )
+    
+    return {
+        "job_id": job_id,
+        "status": "processing",
+        "message": f"Procesando {len(extracted_files)} archivos extraídos del ZIP",
+        "zip_filename": file.filename,
+        "extracted_files": [f['filename'] for f in extracted_files],
+        "estimated_time": f"{len(extracted_files) * 30} segundos"
+    }
+
+@app.websocket("/ws/{job_id}")
+async def websocket_endpoint(websocket: WebSocket, job_id: str):
+    """
+    WebSocket endpoint para actualizaciones en tiempo real del progreso de jobs
+    """
+    await websocket.accept()
+    
+    # Registrar conexión WebSocket
+    websocket_connections[job_id] = websocket
+    
+    try:
+        # Enviar estado inicial si el job existe
+        if job_id in jobs_store:
+            job = jobs_store[job_id]
+            initial_status = {
+                "type": "status_update",
+                "job_id": job_id,
+                "status": job.status.value,
+                "progress": 0 if job.status == JobStatus.PENDING else 50 if job.status == JobStatus.PROCESSING else 100,
+                "message": f"Job {job.status.value}"
+            }
+            await websocket.send_text(json.dumps(initial_status))
+        
+        # Mantener conexión activa
+        while True:
+            try:
+                # Esperar por mensajes del cliente (ping/pong)
+                message = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+                
+                # Responder a ping con pong
+                if message == "ping":
+                    await websocket.send_text("pong")
+                    
+            except asyncio.TimeoutError:
+                # Enviar ping para mantener conexión activa
+                await websocket.send_text(json.dumps({"type": "ping"}))
+                
+    except WebSocketDisconnect:
+        logger.info(f"WebSocket desconectado para job {job_id}")
+    except Exception as e:
+        logger.error(f"Error en WebSocket para job {job_id}: {str(e)}")
+    finally:
+        # Limpiar conexión
+        websocket_connections.pop(job_id, None)
+
 @app.get("/")
 async def root():
     """Endpoint raíz con información de la API"""
     return {
         "message": "API de conversión de documentos funcionando correctamente",
-        "version": "2.0",
-        "features": "Procesamiento asíncrono, seguimiento en tiempo real, respuestas por chunks, monitoreo de memoria, archivos temporales, integración n8n",
-        "endpoints": "POST /convert, POST /convert-and-save, GET /download/{job_id}, GET /status/{job_id}, GET /result/{job_id}, GET /jobs, DELETE /jobs/{job_id}, GET /system/stats, GET /health"
+        "version": "2.1",
+        "features": "Procesamiento asíncrono, seguimiento en tiempo real, respuestas por chunks, monitoreo de memoria, archivos temporales, integración n8n, fusión de documentos, extracción de títulos, soporte ZIP, WebSocket",
+        "endpoints": "POST /convert, POST /convert-and-save, POST /merge-docx, POST /process-zip, WS /ws/{job_id}, GET /download/{job_id}, GET /status/{job_id}, GET /result/{job_id}, GET /jobs, DELETE /jobs/{job_id}, GET /system/stats, GET /health"
     }
 
 
