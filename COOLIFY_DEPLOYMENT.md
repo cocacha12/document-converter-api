@@ -8,7 +8,92 @@ This guide covers various deployment options for the Document Converter API. Cho
 - Docker support (recommended)
 - Basic understanding of environment variables
 
-## 🐳 Docker Deployment (Recommended)
+## 🔥 Nixpacks Deployment (Recommended)
+
+### What is Nixpacks?
+
+Nixpacks is a modern build system that automatically detects your project type and builds optimized containers without requiring a Dockerfile. It's perfect for FastAPI applications and handles all system dependencies automatically.
+
+### Advantages of Nixpacks
+
+- ✅ **No Docker Hub Issues**: Bypasses Docker Hub rate limits and authentication problems
+- ✅ **Automatic Detection**: Detects Python/FastAPI projects automatically
+- ✅ **System Dependencies**: Installs LibreOffice, Tesseract, Pandoc, and other tools automatically
+- ✅ **Optimized Builds**: Creates smaller, faster containers
+- ✅ **Zero Configuration**: Works out of the box with minimal setup
+
+### Nixpacks Configuration
+
+The project includes a `nixpacks.toml` file with all necessary configurations:
+
+```toml
+[variables]
+PORT = "8000"
+HOST = "0.0.0.0"
+ENVIRONMENT = "production"
+
+[phases.setup]
+cmds = [
+    "apt-get update",
+    "apt-get install -y curl libmagic-dev poppler-utils tesseract-ocr tesseract-ocr-spa libreoffice pandoc qpdf",
+    "apt-get clean",
+    "rm -rf /var/lib/apt/lists/*"
+]
+
+[phases.install]
+cmds = [
+    "pip install --no-cache-dir -r requirements.txt"
+]
+
+[phases.build]
+cmds = [
+    "cd frontend && npm ci && npm run build"
+]
+
+[start]
+cmd = "uvicorn main:app --host 0.0.0.0 --port $PORT"
+
+[staticAssets]
+"frontend/dist" = "/"
+```
+
+### Coolify Deployment with Nixpacks
+
+1. **Connect Repository**
+   - Go to your Coolify dashboard
+   - Click "New Resource" → "Application"
+   - Connect your GitHub repository
+   - Select the `main` branch
+
+2. **Select Build Method**
+   - Choose **"Nixpacks"** as the build method
+   - Coolify will automatically detect the `nixpacks.toml` configuration
+
+3. **Configure Environment Variables**
+   ```env
+   PORT=8000
+   HOST=0.0.0.0
+   ENVIRONMENT=production
+   MAX_FILE_SIZE=52428800
+   TEMP_FILES_RETENTION_HOURS=24
+   ALLOWED_ORIGINS=*
+   ```
+
+4. **Deploy**
+   - Click "Deploy"
+   - Nixpacks will automatically build and deploy your application
+   - No Docker Hub authentication required!
+
+### Troubleshooting Nixpacks
+
+If you encounter issues:
+
+1. **Check Build Logs**: Review the Nixpacks build output in Coolify
+2. **Verify Configuration**: Ensure `nixpacks.toml` is in the root directory
+3. **Environment Variables**: Make sure all required variables are set
+4. **Dependencies**: All system dependencies are handled automatically
+
+## 🐳 Docker Deployment (Alternative)
 
 ### System Dependencies
 
