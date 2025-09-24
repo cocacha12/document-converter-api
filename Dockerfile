@@ -1,7 +1,7 @@
 # Dockerfile para API de conversión de documentos
-# Basado en Python 3.12 con dependencias del sistema para MarkItDown
+# Basado en Python 3.11 con dependencias del sistema para MarkItDown
 
-FROM python:3.12-slim
+FROM python:3.11-slim
 
 # Establecer variables de entorno
 ENV PYTHONDONTWRITEBYTECODE=1 \
